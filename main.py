@@ -3,12 +3,10 @@ import requests
 import feedparser
 import google.generativeai as genai
 
-# 從 GitHub Secrets 讀取環境變數
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SCKEY = os.environ.get("SCKEY")
 
 def get_region_news(url):
-    """抓取 RSS 標題與連結"""
     try:
         feed = feedparser.parse(url)
         news_list = []
@@ -16,105 +14,61 @@ def get_region_news(url):
             news_list.append(f"- 標題: {entry.title}\n  連結: {entry.link}")
         return "\n".join(news_list)
     except Exception as e:
-        return f"無法抓取此來源新聞: {str(e)}"
+        return f"無法抓取新聞: {str(e)}"
 
 def main():
     if not GEMINI_API_KEY or not SCKEY:
         print("錯誤：找不到 API Key，請檢查 GitHub Secrets 設定")
         return
 
-    # 1. 定義 RSS 來源
+    # 1. 抓取新聞
     sources = {
         "台灣": "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
         "中國大陸": "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-        "美國 (國際)": "https://news.google.com/rss?hl=zh-TW&gl=US&ceid=TW:zh-Hant",
+        "美國": "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
         "日本": "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
     }
-
-    # 2. 彙整原始新聞
-    print("正在抓取各國新聞標題...")
     raw_news_text = ""
     for region, url in sources.items():
-        news_content = get_region_news(url)
-        raw_news_text += f"\n### 【{region}新聞來源】\n{news_content}\n"
+        raw_news_text += f"\n### 【{region}新聞】\n{get_region_news(url)}\n"
 
-    # 3. 初始化 Gemini AI 並測試可用模型
+    # 2. 初始化與模型診斷
     genai.configure(api_key=GEMINI_API_KEY)
     
-    # 嘗試不同的模型名稱組合，解決 404 問題
-    model_candidates = [
-        'gemini-1.5-flash-latest', 
-        'gemini-1.5-flash', 
-        'gemini-pro',
-        'models/gemini-1.5-flash',
-        'models/gemini-pro'
-    ]
-    
+    # 嘗試清單
+    model_candidates = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
     model = None
-    selected_name = ""
-    
+    error_logs = []
+
+    print("開始診斷 API 狀態...")
     for name in model_candidates:
         try:
-            test_model = genai.GenerativeModel(name)
-            # 嘗試一個極簡的生成來驗證模型是否存在
-            test_model.generate_content("test", generation_config={"max_output_tokens": 1})
-            model = test_model
-            selected_name = name
-            print(f"成功連線至模型: {selected_name}")
+            m = genai.GenerativeModel(name)
+            # 測試極簡生成
+            m.generate_content("Hi", generation_config={"max_output_tokens": 1})
+            model = m
+            print(f"✅ 成功找到可用模型: {name}")
             break
         except Exception as e:
-            print(f"模型 {name} 不可用，嘗試下一個... (錯誤: {e})")
+            error_msg = str(e)
+            error_logs.append(f"模型 {name} 失敗原因: {error_msg}")
+            print(f"❌ {name} 測試失敗")
 
+    # 3. 處理結果
     if not model:
-        ai_summary = f"⚠️ 所有 AI 模型均無法呼叫，請檢查 API Key 權限。\n\n原始新聞內容：\n{raw_news_text}"
+        diagnostic_report = "\n".join(error_logs)
+        ai_summary = f"⚠️ Gemini API 診斷失敗\n\n【詳細報錯如下】\n{diagnostic_report}\n\n請根據報錯檢查 AI Studio 設定。"
     else:
-        # 4. 準備 AI 提示詞
-        prompt = f"""
-        你是一位專業的新聞秘書。請針對以下新聞內容，進行跨國時事的重點整理。
-        你的目標是讓使用者能快速掌握重點，並能與身邊長輩或朋友交談。
-
-        請將內容歸類為：
-        1. 💰 經濟與科技 (重點摘要+連結)
-        2. 🏠 社會與生活 (重點摘要+連結)
-        3. 🏆 運動與娛樂 (重點摘要+連結)
-        4. 💡 聊天話題點：提供 2-3 個適合與長輩聊天、開啟話題的時事小撇步。
-
-        要求：
-        - 內容必須簡練，每則新聞總結不超過 30 字，並保留原始[連結]。
-        - 必須包含中、台、美、日四個地區的綜合消息。
-        - 日本與美國的新聞若為外文，請翻譯並總結為「繁體中文」。
-
-        原始資料如下：
-        {raw_news_text}
-        """
-
-        # 5. 呼叫 AI 生成摘要
+        prompt = f"請將以下新聞做分類摘要（經濟、社會、運動），保留連結，並提供2個與長輩聊天的話題點。語系：繁體中文。\n\n資料：{raw_news_text}"
         try:
-            response = model.generate_content(
-                prompt,
-                safety_settings={
-                    "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
-                    "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
-                    "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
-                    "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-                }
-            )
+            response = model.generate_content(prompt)
             ai_summary = response.text
         except Exception as e:
-            ai_summary = f"⚠️ AI 內容生成過程出錯 ({str(e)})\n以下為原始新聞：\n{raw_news_text}"
+            ai_summary = f"⚠️ 生成過程出錯: {str(e)}"
 
-    # 6. 推送到微信
+    # 4. 推送
     push_url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-    payload = {
-        "title": "☀️ 中午時事 AI 摘要報告",
-        "desp": ai_summary
-    }
-    
-    res = requests.post(push_url, data=payload)
-    if res.status_code == 200:
-        print("✅ 推送完成！")
-    else:
-        print(f"❌ 推送失敗: {res.text}")
+    requests.post(push_url, data={"title": "☀️ 新聞 AI 診斷報告", "desp": ai_summary})
 
 if __name__ == "__main__":
     main()
