@@ -3,46 +3,69 @@ import requests
 import feedparser
 import google.generativeai as genai
 
-# 配置 API Key
+# 從環境變數讀取 Key
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SCKEY = os.environ.get("SCKEY")
 
-# 初始化 Gemini AI
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-
-
 def get_region_news(url):
     """抓取 RSS 標題與連結"""
-    feed = feedparser.parse(url)
-    news_list = []
-    for entry in feed.entries[:5]: # 每個地區取前 5 條
-        news_list.append(f"標題: {entry.title}\n連結: {entry.link}")
-    return "\n".join(news_list)
+    try:
+        feed = feedparser.parse(url)
+        news_list = []
+        # 每個地區取前 5 條重要新聞
+        for entry in feed.entries[:5]:
+            news_list.append(f"標題: {entry.title}\n連結: {entry.link}")
+        return "\n".join(news_list)
+    except Exception as e:
+        return f"無法抓取新聞: {str(e)}"
 
 def main():
-    # 檢查 API Key 是否存在
-    if not GEMINI_API_KEY:
-        print("錯誤：找不到 GEMINI_API_KEY，請檢查 GitHub Secrets 設定")
+    # 1. 檢查必要的 Key
+    if not GEMINI_API_KEY or not SCKEY:
+        print("錯誤：找不到 API Key，請檢查 GitHub Secrets 設定 (GEMINI_API_KEY, SCKEY)")
         return
 
-    # 初始化 Gemini AI
+    # 2. 定義 RSS 來源 (中、台、美、日)
+    sources = {
+        "台灣": "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
+        "中國大陸": "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+        "美國": "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+        "日本": "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
+    }
+
+    # 3. 先彙整原始新聞內容 (這是解決 UnboundLocalError 的關鍵)
+    print("正在抓取各國新聞...")
+    raw_news_text = ""
+    for region, url in sources.items():
+        news_content = get_region_news(url)
+        raw_news_text += f"\n【{region}重要新聞】\n{news_content}\n"
+
+    # 4. 初始化 Gemini AI
     genai.configure(api_key=GEMINI_API_KEY)
     
-    # 修正重點：使用完整的模型路徑名稱
-    # 如果 1.5-flash 還是不行，這段代碼會嘗試使用 gemini-pro (穩定版)
+    # 嘗試使用 1.5-flash，若失敗則退回 gemini-pro
+    model_name = 'models/gemini-1.5-flash'
     try:
-        model = genai.GenerativeModel('models/gemini-1.5-flash')
-        # 這裡先測試一下模型是否可用
-        print("正在嘗試連接 Gemini 1.5 Flash...")
+        model = genai.GenerativeModel(model_name)
     except Exception:
-        print("Gemini 1.5 Flash 暫時無法連線，切換至 Gemini Pro...")
         model = genai.GenerativeModel('models/gemini-pro')
 
-    # ... 後面的 RSS 抓取邏輯保持不變 ...
+    # 5. 準備 AI 提示詞 (Prompt)
+    prompt = f"""
+    你是一位專業的新聞秘書。請針對以下新聞內容，進行分類摘要（包含：社會、經濟、娛樂、運動）。
     
-    # 呼叫 AI 時，建議加入安全過濾器的設定，避免新聞內容觸發敏感詞導致報錯
+    要求：
+    1. 內容精簡，每條新聞用一句話總結重點，並保留原始[連結]。
+    2. 必須涵蓋中、台、美、日四個地區的消息。
+    3. 如果新聞是外文(日文/英文)，請翻譯並總結為繁體中文。
+    4. 最後請加一段「今日觀點」，總結這些時事對讀者的意義。
+
+    原始資料：
+    {raw_news_text}
+    """
+
+    # 6. 呼叫 AI 生成摘要
+    print("正在呼叫 Gemini AI 生成摘要...")
     try:
         response = model.generate_content(
             prompt,
@@ -55,52 +78,20 @@ def main():
         )
         ai_summary = response.text
     except Exception as e:
-        ai_summary = f"AI 摘要生成失敗，原因：{str(e)}\n\n原始新聞如下：\n{raw_news_text}"
+        ai_summary = f"⚠️ AI 摘要生成失敗，原因：{str(e)}\n\n--- 原始新聞備份 ---\n{raw_news_text}"
 
-    # ... 推送至微信的邏輯保持不變 ...
-    # 1. 定義 RSS 來源
-    sources = {
-        "台灣": "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-        "中國大陸": "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-        "美國 (中文)": "https://news.google.com/rss?hl=zh-TW&gl=US&ceid=TW:zh-Hant",
-        "日本 (日文)": "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
-    }
-
-    # 2. 彙整原始新聞
-    raw_news_text = ""
-    for region, url in sources.items():
-        raw_news_text += f"\n【{region}重要新聞】\n{get_region_news(url)}\n"
-
-    # 3. 呼叫 Gemini AI 進行重點整理
-    prompt = f"""
-    你是一位專業的新聞秘書。請針對以下來自台灣、中國大陸、美國、日本的原始新聞標題，
-    進行分類摘要（社會、經濟、娛樂、運動）。
-    
-    要求：
-    1. 內容要精簡，每條新聞用一句話總結重點。
-    2. 必須保留原本的[連結]。
-    3. 用溫暖、客觀的語氣呈現。
-    4. 總結這些新聞對讀者的重要意義。
-
-    原始新聞資料：
-    {raw_news_text}
-    """
-    
-    response = model.generate_content(prompt)
-    ai_summary = response.text
-
-    # 4. 推送到微信 (Server 醬)
+    # 7. 推送到微信 (Server 醬)
     push_url = f"https://sctapi.ftqq.com/{SCKEY}.send"
     payload = {
-        "title": "📍 中午時事 AI 摘要報告",
+        "title": "📰 中午 12 點時事 AI 秘書報告",
         "desp": ai_summary
     }
     
     res = requests.post(push_url, data=payload)
     if res.status_code == 200:
-        print("AI 新聞摘要推送成功！")
+        print("✅ 任務完成！新聞已推送至微信。")
     else:
-        print(f"推送失敗: {res.text}")
+        print(f"❌ 推送失敗: {res.text}")
 
 if __name__ == "__main__":
     main()
