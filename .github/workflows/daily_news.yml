@@ -1,0 +1,23 @@
+name: Gemini AI News Dispatcher
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # 台北時間中午 12 點
+  workflow_dispatch:
+
+jobs:
+  run_job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install Libs
+        run: pip install requests feedparser google-generativeai
+      - name: Run AI Summary
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SCKEY: ${{ secrets.SCKEY }}
+        run: python main.py
