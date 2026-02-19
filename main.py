@@ -1,74 +1,68 @@
 import os
 import requests
 import feedparser
-import json
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# 讀取推送 Key
 SCKEY = os.environ.get("SCKEY")
 
-def get_region_news(url):
+def get_news_by_category(region_info, category_name, rss_url):
+    """抓取特定地區與類別的新聞"""
     try:
-        feed = feedparser.parse(url)
-        news_list = []
-        for entry in feed.entries[:5]:
-            news_list.append(f"- 標題: {entry.title}\n  連結: {entry.link}")
-        return "\n".join(news_list)
+        feed = feedparser.parse(rss_url)
+        content = f"#### 📍 {region_info} - {category_name}\n"
+        # 每個類別抓取前 2 則，避免推播內容過長
+        entries = feed.entries[:2]
+        if not entries:
+            return ""
+            
+        for entry in entries:
+            # 移除標題中多餘的新聞來源後綴 (例如: - Yahoo 新聞)
+            title = entry.title.rsplit(' - ', 1)[0]
+            content += f"- {title}\n  [查看原文]({entry.link})\n"
+        return content + "\n"
     except:
-        return "抓取失敗"
+        return ""
 
 def main():
-    if not GEMINI_API_KEY or not SCKEY:
-        print("錯誤：找不到 API Key")
+    if not SCKEY:
+        print("錯誤：找不到 SCKEY，請檢查 GitHub Secrets")
         return
 
-    # 1. 抓取四地新聞
-    sources = {
-        "台灣": "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-        "中國大陸": "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-        "美國": "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
-        "日本": "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
+    # 定義抓取清單：中、台、美、日、韓
+    # 這裡使用 Google News 的特定分類 RSS
+    sources = [
+        # 台灣
+        ("台灣", "社會經濟", "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"),
+        # 中國大陸
+        ("中國大陸", "時事熱點", "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
+        # 美國 (中文版方便閱讀)
+        ("美國", "國際動態", "https://news.google.com/rss?hl=zh-TW&gl=US&ceid=TW:zh-Hant"),
+        # 日本
+        ("日本", "社會生活", "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"),
+        # 韓國
+        ("韓國", "最新時事", "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko")
+    ]
+    
+    report_body = "📅 今日五地時事快報 (中/台/美/日/韓)\n\n"
+    
+    for region, cat, url in sources:
+        print(f"正在抓取 {region} 新聞...")
+        report_body += get_news_by_category(region, cat, url)
+
+    report_body += "---\n💡 溫馨提醒：點擊連結即可閱讀全文。祝您與長輩聊得愉快！"
+
+    # 推送到微信
+    push_url = f"https://sctapi.ftqq.com/{SCKEY}.send"
+    data = {
+        "title": "☀️ 中午時事彙整 (中台美日韓)",
+        "desp": report_body
     }
     
-    raw_news = ""
-    for region, url in sources.items():
-        raw_news += f"\n【{region}時事資料】\n{get_region_news(url)}\n"
-
-    # 2. 終極相容網址：v1beta + gemini-1.5-flash-latest
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
-    
-    # 3. Prompt (保持您的偏好：分類 + 話題點)
-    prompt = f"""
-    你是一位專業新聞秘書。請將以下新聞資料彙整為一份精美的中文報告。
-    格式：
-    1. 💰 經濟與科技：摘要 + 連結
-    2. 🏠 社會與生活：摘要 + 連結
-    3. 🏆 運動與娛樂：摘要 + 連結
-    4. 💡 聊天話題點：提供 2-3 個適合與長輩朋友聊天的話題建議。
-    要求：每則摘要約 30 字，外文翻譯為繁體中文，保留連結。
-
-    新聞資料：
-    {raw_news}
-    """
-
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    
-    print("正在透過 v1beta API 生成摘要...")
-    try:
-        res = requests.post(api_url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload))
-        res_json = res.json()
-        
-        if "candidates" in res_json:
-            final_text = res_json['candidates'][0]['content']['parts'][0]['text']
-            print("✅ 摘要成功生成")
-        else:
-            # 這裡會印出更詳細的錯誤，方便我們診斷
-            final_text = f"⚠️ AI 生成失敗。API 回傳：{json.dumps(res_json, ensure_ascii=False)}"
-            
-    except Exception as e:
-        final_text = f"❌ 請求失敗: {str(e)}\n\n原始新聞備份：\n{raw_news}"
-
-    # 4. 推送到微信
-    requests.post(f"https://sctapi.ftqq.com/{SCKEY}.send", data={"title": "📰 今日中午 AI 時事精華報告", "desp": final_text})
+    res = requests.post(push_url, data=data)
+    if res.status_code == 200:
+        print("✅ 任務成功！內容已推送到微信。")
+    else:
+        print(f"❌ 推送失敗: {res.text}")
 
 if __name__ == "__main__":
     main()
