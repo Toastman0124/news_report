@@ -2,40 +2,50 @@ import os
 import requests
 import feedparser
 from deep_translator import GoogleTranslator
+import urllib.parse
 
 # 從環境變數讀取推送 Key
 SCKEY = os.environ.get("SCKEY")
 
-def get_categorized_news(region_name, icon, topics, translate_to_chinese=False):
-    """根據分類抓取新聞"""
+def get_categorized_news(region_name, icon, lang_config, translate_to_chinese=False):
+    """使用關鍵字搜尋方式抓取分類新聞"""
     translator = GoogleTranslator(source='auto', target='zh-TW')
     region_content = f"## {icon} {region_name}\n"
     
-    for topic_name, topic_icon, rss_url in topics:
+    # 分類與對應搜尋關鍵字 (針對不同語言調整)
+    categories = [
+        ("政治", "⚖️", lang_config['politics']),
+        ("經濟", "💰", lang_config['finance']),
+        ("社會", "🏠", lang_config['society']),
+        ("娛樂", "🎭", lang_config['entertainment'])
+    ]
+    
+    for cat_name, cat_icon, keyword in categories:
         try:
-            feed = feedparser.parse(rss_url)
-            region_content += f"#### {topic_icon} {topic_name}\n"
+            # 將關鍵字進行 URL 編碼
+            encoded_key = urllib.parse.quote(keyword)
+            # 使用 Google News 搜尋 RSS 網址
+            rss_url = f"https://news.google.com/rss/search?q={encoded_key}&hl={lang_config['hl']}&gl={lang_config['gl']}&ceid={lang_config['ceid']}"
             
-            # 每個分類抓取 3 則
+            feed = feedparser.parse(rss_url)
+            region_content += f"#### {cat_icon} {cat_name}\n"
+            
             entries = feed.entries[:3]
             if not entries:
                 region_content += "- (暫無消息)\n"
                 continue
                 
             for i, entry in enumerate(entries, 1):
-                original_title = entry.title.rsplit(' - ', 1)[0]
+                title = entry.title.rsplit(' - ', 1)[0]
                 if translate_to_chinese:
                     try:
-                        display_title = translator.translate(original_title)
-                    except:
-                        display_title = original_title
-                else:
-                    display_title = original_title
+                        title = translator.translate(title)
+                    except: pass
                 
-                region_content += f"{i}. {display_title} [🔗]({entry.link})\n"
+                region_content += f"{i}. {title} [🔗]({entry.link})\n"
             region_content += "\n"
         except:
-            continue
+            region_content += "- (讀取失敗)\n"
             
     return region_content
 
@@ -44,57 +54,32 @@ def main():
         print("錯誤：找不到 SCKEY")
         return
 
-    # 定義各國各分類的 RSS URL (Google News Topic IDs)
-    # 台灣
-    tw_topics = [
-        ("政治", "⚖️", "https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRzV6Y0hjU0FtdHZHZ0pKUVNnQVAB?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"),
-        ("經濟", "💰", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVd4b1NBUmxHZ0pKUVNnQVAB?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"),
-        ("社會", "🏠", "https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRzV6Y0hjU0FtdHZHZ0pKUVNnQVAB?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"), # 台灣社會常用本地主題
-        ("娛樂", "🎭", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtdHZHZ0pKUVNnQVAB?hl=zh-TW&gl=TW&ceid=TW:zh-Hant")
-    ]
-    # 中國大陸
-    cn_topics = [
-        ("政治", "⚖️", "https://news.google.com/rss/topics/CAAqJQgKIh5DQkFTRVdvSkwyMHZNR1ptZHpWbUVnSnJieWdBUVAB?hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
-        ("經濟", "💰", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVd4b1NBUmxHZ0pKckJ5Z0FQAQ?hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
-        ("社會", "🏠", "https://news.google.com/rss/topics/CAAqJQgKIh5DQkFTRVdvSkwyMHZNR1ptZHpWbUVnSnJieWdBUVAB?hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
-        ("娛樂", "🎭", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtdHZHZ0pKckJ5Z0FQAQ?hl=zh-CN&gl=CN&ceid=CN:zh-Hans")
-    ]
-    # 美國 (國際版中文)
-    us_topics = [
-        ("政治", "⚖️", "https://news.google.com/rss/topics/CAAqIggKIhtDQkFTRGdvSkwyMHZNRGxqTkhZNFNBUmxHZ0pLVVNB0gEAKhAIByoICiIGYm9sdWNoMAA?hl=zh-TW&gl=US&ceid=US:zh-Hant"),
-        ("經濟", "💰", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVd4b1NBUmxHZ0pLVVNB0gEAKhAIByoICiIGYm9sdWNoMAA?hl=zh-TW&gl=US&ceid=US:zh-Hant"),
-        ("社會", "🏠", "https://news.google.com/rss/topics/CAAqIggKIhtDQkFTRGdvSkwyMHZNRGxqTkhZNFNBUmxHZ0pLVVNB0gEAKhAIByoICiIGYm9sdWNoMAA?hl=zh-TW&gl=US&ceid=US:zh-Hant"),
-        ("娛樂", "🎭", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtdHZHZ0pLVVNB0gEAKhAIByoICiIGYm9sdWNoMAA?hl=zh-TW&gl=US&ceid=US:zh-Hant")
-    ]
-    # 日本
-    jp_topics = [
-        ("政治", "⚖️", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZ4ZERidUVndHdaU2dCS0Flb0FBUAE?hl=ja&gl=JP&ceid=JP:ja"),
-        ("經濟", "💰", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVd4b1NBUmxHZ0pLU2dCS0Flb0FBUAE?hl=ja&gl=JP&ceid=JP:ja"),
-        ("社會", "🏠", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRzV6Y0hjU0FtdHZHZ0pLU2dCS0Flb0FBUAE?hl=ja&gl=JP&ceid=JP:ja"),
-        ("娛樂", "🎭", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtdHZHZ0pLU2dCS0Flb0FBUAE?hl=ja&gl=JP&ceid=JP:ja")
-    ]
-    # 韓國
-    kr_topics = [
-        ("政治", "⚖️", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFZ4ZERidUVndHdaU2dCS0Flb0FBUAE?hl=ko&gl=KR&ceid=KR:ko"),
-        ("經濟", "💰", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVd4b1NBUmxHZ0pLU2dCS0Flb0FBUAE?hl=ko&gl=KR&ceid=KR:ko"),
-        ("社會", "🏠", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRzV6Y0hjU0FtdHZHZ0pLU2dCS0Flb0FBUAE?hl=ko&gl=KR&ceid=KR:ko"),
-        ("娛樂", "🎭", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtdHZHZ0pLU2dCS0Flb0FBUAE?hl=ko&gl=KR&ceid=KR:ko")
-    ]
+    # 各國語言與搜尋關鍵字配置
+    configs = {
+        "TW": {"hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant", 
+               "politics": "政治", "finance": "財經", "society": "社會", "entertainment": "娛樂"},
+        "CN": {"hl": "zh-CN", "gl": "CN", "ceid": "CN:zh-Hans", 
+               "politics": "政治", "finance": "財經", "society": "社會", "entertainment": "娛樂"},
+        "US": {"hl": "zh-TW", "gl": "US", "ceid": "US:zh-Hant", 
+               "politics": "US Politics", "finance": "Economy", "society": "US News", "entertainment": "Entertainment"},
+        "JP": {"hl": "ja", "gl": "JP", "ceid": "JP:ja", 
+               "politics": "政治", "finance": "経済", "society": "社会", "entertainment": "エンタメ"},
+        "KR": {"hl": "ko", "gl": "KR", "ceid": "KR:ko", 
+               "politics": "정치", "finance": "경제", "society": "사회", "entertainment": "연예"}
+    }
 
     report_body = "📅 今日五地各類新聞精華 (12:00)\n\n"
-    report_body += get_categorized_news("台灣", "🇹🇼", tw_topics, False)
-    report_body += get_categorized_news("中國大陸", "🇨🇳", cn_topics, False)
-    report_body += get_categorized_news("美國 (國際)", "🇺🇸", us_topics, False)
-    report_body += get_categorized_news("日本", "🇯🇵", jp_topics, True)
-    report_body += get_categorized_news("韓國", "🇰🇷", kr_topics, True)
+    report_body += get_categorized_news("台灣", "🇹🇼", configs["TW"], False)
+    report_body += get_categorized_news("中國大陸", "🇨🇳", configs["CN"], False)
+    report_body += get_categorized_news("美國 (國際)", "🇺🇸", configs["US"], False)
+    report_body += get_categorized_news("日本", "🇯🇵", configs["JP"], True)
+    report_body += get_categorized_news("韓國", "🇰🇷", configs["KR"], True)
 
-    report_body += "---\n💡 溫馨提醒：點擊連結圖示 [🔗] 即可閱讀詳情。"
+    report_body += "---\n💡 點擊 [🔗] 即可閱讀詳情。祝您與長輩聊得愉快！"
 
     # 推送至微信
     push_url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-    res = requests.post(push_url, data={"title": "📰 五地時事分類報 (共 60 則)", "desp": report_body})
-    if res.status_code == 200:
-        print("✅ 推送成功！")
+    requests.post(push_url, data={"title": "📰 五地時事分類報 (共 60 則)", "desp": report_body})
 
 if __name__ == "__main__":
     main()
